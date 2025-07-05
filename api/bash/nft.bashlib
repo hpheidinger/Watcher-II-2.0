@@ -1,0 +1,328 @@
+# - api/bash/nft.bashlib -
+#
+# Note:	Functions that use awk probably use @include statments
+# 	To finde the includes AWKPATH must be exported explicitly
+export	AWKPATH		# Any AWKlib might be used here
+
+declare -A ACCEPTS=([whitelist]=1)
+
+watcher-preflight() {
+local funtag="[${FUNCNAME[0]}]"
+
+	echo $funtag
+	nft_init_wormhole_chain
+	nft_init_blackhole_chain
+}
+
+nft_init_wormhole_chain() {
+local funtag="[${FUNCNAME[0]}]"
+local	wormhole='watcher-wormhole'
+local	ipaddr
+
+	# Chain erstellen, wenn noch nicht vorhanden
+	if ! nft_chains | grep -q "^$wormhole$"
+	then
+		nft add chain "$NFT_BASE_TAB" "$wormhole" \
+			'{ type filter hook prerouting priority -50; policy accept; }'
+	fi
+
+	# Never ever block our own NICs
+	for ipaddr in $(hostname -i)
+	do
+		if [[ "$ipaddr" == *:* ]]
+		then nft insert rule "$NFT_BASE_TAB" "$wormhole" ip6 saddr "$ipaddr" accept
+		else nft insert rule "$NFT_BASE_TAB" "$wormhole" ip  saddr "$ipaddr" accept
+		fi
+	done
+
+	# Never ever block Loopback addresses
+	nft insert rule "$NFT_BASE_TAB" "$wormhole" ip 	saddr 127.0.0.1 accept
+	nft insert rule "$NFT_BASE_TAB" "$wormhole" ip6 saddr ::1 accept
+}
+
+
+nft_init_blackhole_chain() {
+local   funtag="[${FUNCNAME[0]}]"
+local   blackhole='watcher-blackhole'
+local   setlist
+local   setname
+
+	# Phase 1: Chain erzeugen mit policy accept
+	if ! nft_chains | grep -q "^$blackhole$"
+	then
+		nft add chain "$NFT_BASE_TAB" "$blackhole" \
+			'{ type filter hook prerouting priority filter -10; policy accept; }'
+	fi
+}
+
+
+# Most basic thing - list all the ruleset(s)
+nft_ruleset() {
+local   funtag="[${FUNCNAME[0]}]"
+	nft list ruleset
+}	
+
+# Check for running firewalld ...
+nft_have_firewalld() {
+local   funtag="[${FUNCNAME[0]}]"
+local	tables=`nft_tables`
+local	haveit=`grep -oE "inet firewalld" <<< "$tables"`
+
+	if [ -z "$haveit" ]
+	then	NFT_BASE_TAB="(nope)"
+	else	NFT_BASE_TAB="$haveit"
+	fi
+
+	echo "$NFT_BASE_TAB"
+}
+
+nft_tables() {
+local funtag="[${FUNCNAME[0]}]"
+local	tables=`nft list tables`
+local	t line
+
+	awk '/[ \t]*table/ {print $2,$3}' <<< "$tables"
+}
+
+# Check for present table
+nft_have_table() {
+# $1 ..	table name
+local   funtag="[${FUNCNAME[0]}]"
+local	tables=`nft_tables`
+
+	if [[ "$tables" =~ "$1" ]]
+	then echo "OK table $1"	 && return 0
+	else echo "No table $1"	
+	fi
+
+	return 1
+}
+
+nft_chains() {
+local   funtag="[${FUNCNAME[0]}]"
+local	chains=`nft list chains`
+local	line
+
+	: echo "'$chains'"
+	awk '/[ \t]*chain/ {print $2}' <<< "$chains"
+}
+
+
+# Load set from $pool
+nft_load_set() {
+# $1 ..	set name
+local   funtag="[${FUNCNAME[0]}]"
+local	prefix=$POOL/nftset.Loadfile
+
+	if [ -f $prefix-$1 ]
+	then	nft -f $prefix-$1
+	else	echo "No file $prefix-$1"
+	fi
+}
+
+# List all sets in BASE_TABLE
+nft_sets() {
+local   funtag="[${FUNCNAME[0]}]"
+local	sets=$(nft list sets)
+local	line
+
+	awk '/[ \t]*set/ {print $2}' <<< "$sets"
+}
+
+nft_flush_set() {
+# $1 .. set name
+local funtag="[${FUNCNAME[0]}]"
+local	sets=`nft list sets` 
+
+	if [ "$1" == "ALL" ]
+	then
+		for s in `echo $sets`
+		do nft flush set "$NFT_BASE_TAB" $s
+		done
+	else 	nft flush set "$NFT_BASE_TAB" $1
+	fi
+}
+
+
+# Make a set in $NFT_BASE_TAB
+nft_mkset() {
+# $1 .. set name
+# $2 .. type (e.g., ipv4_addr / ipv6_addr)
+# $3 .. options
+local funtag="[${FUNCNAME[0]}]"
+local	set_name="$1"
+local	set_type="$2"
+local	set_opts="$3"
+local	ipver
+
+	if [[ -z "$set_name" || -z "$set_type" ]]; then
+		echo "$funtag missing arguments" >&2
+		return 1
+	fi
+
+	if ! nft list set "$NFT_BASE_TAB" "$set_name" &>/dev/null; then
+		nft add set "$NFT_BASE_TAB" "$set_name" "{ type $set_type; $set_opts }"
+	fi
+
+	# Determine IP family: ip or ip6
+	case "$set_type" in
+		ipv4_addr) ipver="ip"	;;
+		ipv6_addr) ipver="ip6"	;;
+		*) echo "$funtag unsupported set type: $set_type" >&2; return 2 ;;
+	esac
+
+	nft_link_set "$set_name" "$ipver"
+}
+
+
+nft_link_set() {
+# $1 .. set name
+# $2 .. ip family (ip|ip6)
+local funtag="[${FUNCNAME[0]}]"
+local	set_name="$1"
+local	ipver="$2"
+local	the_chain action
+
+	if [[ -z "$set_name" || -z "$ipver" ]]
+	then
+		echo "$funtag missing arguments" >&2
+		return 1
+	fi
+
+	if [[ -n "${ACCEPTS[$set_name]}" ]]
+	then the_chain="watcher-wormhole";	action=accept
+	else the_chain="watcher-blackhole";	action=drop
+	fi
+
+	# Skip if already present
+	if nft list chain "$NFT_BASE_TAB" "$the_chain" 2>/dev/null |\
+		grep -qE "$ipver saddr \@${set_name}"
+	then
+		return 0
+	fi
+
+	# Insert rule
+	nft add rule "$NFT_BASE_TAB" "$the_chain" "$ipver" saddr @"$set_name" $action
+}
+
+
+# Delete a set in NFT_BASE_TAB
+nft_del_set() {
+# $1 .. set name
+local   funtag="[${FUNCNAME[0]}]"
+	nft delete set "$NFT_BASE_TAB" $1
+}
+
+nft_del_element() {
+# $1 ..	set name
+# $2 .. element (ip addr)
+local   funtag="[${FUNCNAME[0]}]"
+
+	nft delete element "$NFT_BASE_TAB" $1 \{ $2 \}
+}
+
+
+###########################################
+# View functions
+# View an nft component in nft block format
+###########################################
+#
+nft_view_set() {
+# $1 .. set name
+local   funtag="[${FUNCNAME[0]}]"
+
+	nft list set "$NFT_BASE_TAB" $1
+}
+
+nft_view_chain() {
+# $1 .. chain name
+local   funtag="[${FUNCNAME[0]}]"
+
+	nft list chain "$NFT_BASE_TAB" "$1"
+}
+
+###########################################
+# List functions
+###########################################
+
+# Return a list of referenced sets
+nft_list_chain() {
+# $1	then chain to list	
+local funtag="[${FUNCNAME[0]}]"
+local	set_refs sets
+
+	set_refs=$(nft_view_chain $1 | grep 'saddr @' | tr -d '@')
+
+	sets=$(awk '
+	/saddr/		{ print $(NF-1)","$NF }
+	' <<< "$set_refs" | sort)
+
+	echo "$sets"
+}
+
+element_list() {
+# $1 ..	set name
+# $2 .. the table (if present)
+local funtag="[${FUNCNAME[0]}]"
+local	table
+
+	if [ ! -z "$2" ]
+	then	table="$2"
+	else	table="$NFT_BASE_TAB"
+	fi	
+	
+	# No set, no job
+	if [ -z "$1" ]; then return -1; fi
+
+	nft list set $table $1 |\
+	awk '
+	@include "netlib.awk"
+	BEGIN { on=0 }
+	/(elements = {)/ { on=1	# Get initial line
+				gsub(/^[ \t]+|[ \t]+$/,"")
+				split($0,parts,"{ ")
+				x=split(parts[2],elems,", ")
+				for (i=1; i<=x; i++) {
+					gsub(/[ ,}]$/,"",elems[i])
+					arr[elems[i]]=elems[i]
+				}
+				next
+			}
+	/}$/		{ if (on == 1) on=0	# Get remainder
+				gsub(/^[ \t]+|[ \t]+$/,"")
+				split($0,parts,"}")
+				x=split(parts[1],elems,", ")
+				for (i=1; i<=x; i++) {
+					# Strip trailing comma
+					gsub(/[,]$/,"",elems[i])
+					arr[elems[i]]=elems[i]
+				}
+				next
+			}
+			{ 
+				if ( on == 1 ) {
+					gsub(/^[ \t]+|[ \t]+$/,"")
+					x=split($0,elems,", ")
+					for (i=1; i<=x; i++) {
+						gsub(/[,]$/,"",elems[i])
+						arr[elems[i]]=elems[i]
+					}	
+				} else { next }
+			}
+	END { for (a in arr) print arr[a] }
+	' | sort -V
+
+	return 0
+}
+
+# List elements from all sets
+elements_all() {
+local funtag="[${FUNCNAME[0]}]"
+local	allsets=$(nft_sets | xargs)
+
+	for s in $allsets
+	do element_list $s
+	done	
+}	
+
+# vim: set filetype=sh noexpandtab tabstop=8 shiftwidth=8 autoindent smartindent :

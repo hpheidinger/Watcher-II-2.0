@@ -1,0 +1,72 @@
+#!/bin/bash
+if [[ "$1" == 'debug'  ]]; then set -x;		_DEBUG=$1; shift; fi
+if [[ "$1" == 'debug2' ]]; then set -xvT;	_DEBUG=$1; shift; fi
+if [[ "$1" == 'trace'  ]]; then 		_TRACE=$1; shift; fi
+####################################################################
+# - Blacklist, Master -
+#	- NFT -
+# Run this manually after changes to the 'blacklist' file
+# or from crontab with a short cycle; e.g. 5 minutes
+####################################################################
+#------------------------
+REALPATH=`realpath $0`
+WHERE=`dirname $REALPATH`
+ME=`basename $REALPATH`
+cd $WHERE
+. ../system.conf
+. ../watchermap.conf
+. ../common.conf
+. ../common.bashlib
+. ../api/bash/nft.bashlib
+#------------------------
+#  Private stuff
+. ../conf/private/$ME.conf
+
+#
+# Fill in local blacklist
+#
+#mk-ipset $MYSET "$SETTYP" "$SETOPTS"
+# Mimic IPSETs 'exist'
+exist=$(nft_sets | grep -c $MYSET)
+if [ $exist -lt 1 ]
+then nft_mkset $MYSET "$SETTYP" "$SETOPTS"
+fi
+
+if [ -f $MASTER_PATH/blacklist ]
+then
+	for list in blacklist
+	do
+	#	LOADFILE=$POOL'/ipset.Loadfile-'$list
+	#	echo "-exist create "list" comment"     > $LOADFILE
+
+#		awk -v list=$list -v loadfile="$LOADFILE" ' 
+		awk	-v setname=$MYSET		\
+	       		-v settyp="$SETTYP"		\
+		       	-v setopts="$SETOPTS"		\
+			-v basetable="$NFT_BASE_TAB"	\
+			-v exist=$exist			\
+		       	-v loadfile="$LOADFILE" '
+		BEGIN	{ SUFFIX="comment \"blacklisted\"" }
+		/^$/            { next }
+		/^[ \t]*[#]/    { next }
+				{ IP[$1]=$1 }
+		END {
+			if ( exist < 1 )
+			printf "add set %s %s {type %s; %s}\n", basetable, setname, settyp, setopts > loadfile
+
+			for ( ip in IP ) {
+			#	printf "add %s %s comment blacklisted\n", setname, ip > loadfile	
+				printf "add element %s %s {%s %s}\n", basetable, setname, ip, SUFFIX >> loadfile
+			}
+		}
+		' $MASTER_PATH/$list
+
+		nft_flush_set $MYSET
+		nft -f $LOADFILE
+		logger "$ME[$$] SET $MYSET loaded from loadfile $LOADFILE"
+
+	done
+	logger	 "$ME[$$] Loaded blacklist from 'blacklist' file in $MASTER_PATH ..."
+else
+	echo 	 "$ME: No 'backlist' file in $MASTER_PATH ..."
+fi

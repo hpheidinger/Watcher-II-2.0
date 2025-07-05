@@ -1,0 +1,76 @@
+#!/bin/bash
+if [[ "$1" == 'debug'  ]]; then set -x;		_DEBUG=$1; shift; fi
+if [[ "$1" == 'debug2' ]]; then set -xvT;	_DEBUG=$1; shift; fi
+if [[ "$1" == 'trace'  ]]; then 		_TRACE=$1; shift; fi
+####################################################################
+PROC_START=`date +%s%N`
+# - LoadLG -	-NFT-
+# Bump up firewall with registered bandits from DB ...
+#
+#------------------------
+REALPATH=`realpath $0`
+WHERE=`dirname $REALPATH`
+ME=`basename $REALPATH`
+cd $WHERE
+. ../../system.conf
+. ../../watchermap.conf
+. ../../common.conf
+. ../../common.bashlib
+. ../../api/bash/nft.bashlib
+#------------------------
+. WatchLG.conf
+
+trap cleanup    0 1 2 9 15
+
+cleanup() {
+        PROC_END=`date +%s%N`
+        PROC_TIME=`echo "scale=3; ($PROC_END - $PROC_START)/10^6" | bc`
+        logger "$ME[$$]: Finished: $PROC_TIME ms'"
+        printf  " » %-15s ... finished in %8.2f ms\n" $ME $PROC_TIME
+}
+
+LOADER=LG
+LOADFILE=$POOL/nftset.Loadfile-$LOADER
+
+log "$MODULE started loading from $DB ..."
+
+$SQL "delete from $TABLE where IP='' or IP='unknown';"
+
+>$LOADFILE
+RANGE=`$SQL "select IP,type,class from $TABLE where state='DROP' order by IP"`
+
+# Mimic Ipset's 'exist' ...
+exist=$(nft_sets | grep -c $MYSET)
+
+echo "$RANGE" |\
+awk	-v setname=$MYSET		\
+       	-v settyp="$SETTYP"		\
+	-v setopts="$SETOPTS" 		\
+	-v basetable="$NFT_BASE_TAB"	\
+	-v exist=$exist			\
+	-v loadfile=$LOADFILE 		'
+BEGIN	{} 
+	{
+		split ($0,parts,"|")
+		bandits[parts[1]]=parts[2]","parts[3]
+	}
+END	{
+	if (exist > 0)
+        printf "add set %s %s {type %s; %s}\n", basetable, setname, settyp, setopts > loadfile
+	for (bandit in bandits) {
+		CLASS=bandits[bandit]
+		COMMENT=sprintf("comment \"%s,%s\"", setname, CLASS)
+		if ( bandit != "")
+			printf "add element %s %s {%s %s}\n", basetable, setname, bandit, COMMENT >> loadfile
+	}
+}
+'
+
+if [ $exist -lt 1 ]
+then nft_mkset $MYSET "$SETTYP" "$SETOPTS"
+fi
+
+nft_flush_set $MYSET >/dev/null 2>&1
+nft -f $LOADFILE
+
+log "$MODULE finished loading $LOADER"

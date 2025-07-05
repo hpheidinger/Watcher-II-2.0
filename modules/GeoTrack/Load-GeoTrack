@@ -1,0 +1,98 @@
+#!/bin/bash
+if [[ "$1" == 'debug'  ]]; then set -x;		_DEBUG=$1; shift; fi
+if [[ "$1" == 'debug2' ]]; then set -xvT;	_DEBUG=$1; shift; fi
+if [[ "$1" == 'trace'  ]]; then 		_TRACE=$1; shift; fi
+####################################################################
+PROC_START=`date +%s%N`
+# - GeoTrack Loader -	- NFT -
+#-------------------------
+REALPATH=`realpath $0`
+WHERE=`dirname $REALPATH`
+ME=`basename $REALPATH`
+cd $WHERE
+. ../../system.conf
+. ../../common.conf
+. ../../common.bashlib
+. ../../api/bash/nft.bashlib
+. GeoTrack.conf
+#-------------------------
+#LOADFILE=$POOL/ipset.Loadfile-$MODULE
+LOADFILE=$POOL/nftset.Loadfile-$MODULE
+
+trap cleanup 0 1 2 9 15
+
+cleanup() {
+local funtag="[${FUNCNAME[0]}]"
+	PROC_END=`date +%s%N`
+        PROC_TIME=`echo "scale=3; ($PROC_END - $PROC_START)/10^6" | bc`
+        logger "$ME[$$]: Finished: $PROC_TIME ms'"
+        printf  " » %-15s ... finished in %8.2f ms\n" $ME $PROC_TIME
+}
+
+#load_ipset() {
+load_nftset() {
+local funtag="[${FUNCNAME[0]}]"
+local	exist=$(nft_sets | grep -c "$MYSET" )
+
+#	# False (1) if not found ...
+#	if ! $IPSET -n list $MODULE >/dev/null 2>&1
+#	then 	mk-ipsut $MODULE-DB "$SETTYP" "$SETOPTS" >/dev/null 2>&1
+#	fi
+
+	if [ $exist -lt 1 ]
+	then nft_mkset  $MYSET "$SETTYP" "$SETOPTS"
+	fi
+
+	#$IPSET -file $1 restore
+	nft_flush_set $MYSET >/dev/null 2>&1
+	nft -f $LOADFILE
+}
+
+
+#----------------- Main -----------------------
+#logger "$ME[$$]: Loading IPset for $MODULE ..."
+logger "$ME[$$]: Loading NFT set for $MODULE ..."
+
+exist=$(nft_sets | grep -c $MYSET)
+
+> $LOADFILE
+# Create a loadfile for IPSET
+$SQL "select ip,route,country from $TABLE" |\
+awk 	-v loadfile=$LOADFILE 		\
+	-v setname=$MYSET 		\
+	-v settyp="$SETTYP"		\
+	-v setopts="$SETOPTS"		\
+	-v basetable="$NFT_BASE_TAB"	\
+	-v exist=$exist	'
+BEGIN {} 
+	{ 
+		split ($0,parts,"|")
+		ip 	= parts[1]
+		route	= parts[2]
+		country = parts[3]
+
+		if ( route == "" ) {
+			addr = ip
+		} else {addr = route }
+
+		bandits[addr]=country
+	}
+
+END {
+	# printf "-exist create %s %s %s\n",setname,settype,setopts > loadfile
+	if ( exist < 1 )
+                printf "add set %s %s {type %s; %s}\n", basetable, setname, settyp, setopts > loadfile
+
+	for (bandit in bandits) {
+		CLASS=bandits[bandit]
+		#COMMENT="DB,GeoTrack,"CLASS
+		COMMENT=sprintf("comment \"GeoTrack-DB, %s\"", CLASS)
+		if (bandit != "") 
+ 		#	printf "add %s %s comment \"%s\"\n", setname,bandit,COMMENT >> loadfile
+		 printf "add element %s %s {%s %s}\n", basetable, setname, bandit, COMMENT >> loadfile
+        }
+}'
+
+#load_ipset $LOADFILE
+load_nftset $LOADFILE
+

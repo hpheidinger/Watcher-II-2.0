@@ -1,0 +1,15 @@
+192.42.116.191 POST /graphql/graphiql
+185.40.4.101 POST /graphql
+51.195.190.33 POST /scripts/WPnBr.dll
+185.220.101.6 POST /graphql/console
+185.220.100.242 POST /graphql/graphiql.php
+204.8.96.76 POST /graphql.php
+212.102.46.199 POST /owa/auth.owa
+179.43.191.19 POST /wp-json/litespeed/v1/cdn_status
+178.128.207.138 POST /php-cgi/php-cgi.exe?%ADd+cgi.force_redirect%3D0+%ADd+disable_functions%3D""+%ADd+allow_url_include%3D1+%ADd+auto_prepend_file%3Dphp://input
+83.219.248.170 POST /assets/components/gallery/connector.php
+71.79.82.34 POST /xmlrpc.php
+101.36.124.120 POST /hello.world?%ADd+allow_url_include%3d1+%ADd+auto_prepend_file%3dphp://input
+83.219.248.170 POST /connectors/system/phpthumb.php
+51.195.190.33 POST /sdk
+83.219.250.112 POST /accesson1.php

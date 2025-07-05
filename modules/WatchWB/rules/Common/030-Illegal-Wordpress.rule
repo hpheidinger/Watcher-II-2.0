@@ -1,0 +1,41 @@
+#
+# Wordpress - Illegal for this site
+#
+WEB_CLASS=Illegal-Wordpress
+###############################
+
+RULE=WP-inludes
+Pattern="/wp-inludes/"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+
+RULE=WP
+Pattern="GET /wp/"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+
+RULE=WEBSITE
+Pattern="GET /website/"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+
+RULE=WORDPRESS
+Pattern="GET /wordpress/"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+
+RULE=WP-admin
+Pattern="GET /wp-admin/"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+
+RULE=WP-Login
+Pattern="GET /wp-login.php"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+
+RULE=WP-JSON
+Pattern="GET /wp-json"
+#---------------
+if [[ "$REPLY" =~ "$Pattern" ]]; then kickoff; return $?; fi
+

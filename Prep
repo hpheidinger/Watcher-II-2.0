@@ -1,0 +1,296 @@
+#!/bin/bash
+if [ "$1" == 'debug'  ]; then set -x;   shift; fi
+if [ "$1" == 'debug2' ]; then set -xvT; shift; fi
+#
+# Prepare Watcher V2.x for operation
+#
+# WHERE=`realpath .` ... nice pitfall ...
+# cd $WHERE
+WHERE=`pwd`
+MASTER_PATH=$WHERE
+ME=`basename $0`
+#-----------------
+export WATCHER_MODE='prep'	# Allow sourcing of 'watcher.conf'
+. watcher.conf
+. api/bash/nft.bashlib
+
+echo "Watcher master preparation - Watcher $PRODUCT $REVISION"
+echo "Your installation is in $MASTER_PATH ..."
+echo "$MASTER_PATH" > MASTER_PATH
+
+echo "This machine: $HOSTNAME"
+echo "IP address  : `hostname -i`"
+
+# See which firewall type is running on this system
+check_firewall() {
+local	tables=$(nft_tables  | grep '^inet' )	
+local	count=$(wc -l <<< "$tables")
+local	family basetab
+
+	echo ">>> DEBUG >>> $tables"
+
+	if [ $count -gt 1 ]
+	then 	echo "Multible firewalls are not allowed"
+		echo "----------------------------------"
+		echo "$tables"
+		echo "----------------------------------"
+		exit
+	fi
+
+	family=$(awk '{print $1}'  <<< "$tables")
+	basetab=$(awk '{print $2}' <<< "$tables")
+
+	echo ">>> DEBUG >>> $family"
+	echo ">>> DEBUG >>> $basetab"
+
+	case $basetab in
+		*firewalld)	FIREWALL="firewalld"
+				NFT_BASE_TAB="$basetab"
+				NFT_BASE_FAMILY="$family"
+				CUSTOM_FIREWALL=
+		;;	
+		*)		FIREWALL="nftables"
+				NFT_BASE_TAB="$family $basetab"
+				NFT_BASE_FAMILY="$family"
+				CUSTOM_FIREWALL=yes
+		;;	
+		'')		FIREWALL=''
+				echo "No firewall is running on this system"
+				exit
+	;;
+	esac
+
+	if [ -z "$NFT_BASE_TAB" ]
+	then 	echo "Determined firewall '$FIREWALL'"
+		echo "But it is not started or start fails"
+		echo "and provides the base table"
+		exit
+	fi	
+}
+
+#
+# See which system we are running on and which firewall is installed and running
+#
+check_system() {
+local	system=`grep '^ID=' /etc/os-release  | tr -d "\"" | cut -f2 -d"="`
+local	version=`grep '^VERSION_ID=' /etc/os-release | tr -d "\"" | cut -f2 -d"="`
+local	syslike=`grep '^ID_LIKE=' /etc/os-release | tr -d "\"" | cut -f2 -d"="`
+local	sysstyle="$system $syslike"
+	
+	>system.conf		# ... and clear system.conf file
+	echo "# This file was written by the 'Prep' routine" 	>> system.conf
+	echo "# `date --iso=seconds` " 				>> system.conf
+	echo "# --- Do not change manually ---"	 		>> system.conf
+	echo "MASTER_PATH='$MASTER_PATH'"			>> system.conf
+	echo "POOL='$MASTER_PATH/Pool'"				>> system.conf
+	echo "SYSTEM='$system'"				 	>> system.conf
+	echo "SYSVERS='$version'"	 			>> system.conf
+	echo "SYSLIKE='$syslike'"	 			>> system.conf
+	echo "SYSSTYLE='$system $syslike'"			>> system.conf
+
+	printf "System    : %s %s\n" $system $version
+	printf "  like    : %s %s\n" "$syslike"
+	printf " style    : %s %s\n" "$sysstyle"
+
+	if [ ! -z "FIREWALL" ]
+	then
+		printf "Firewall    : %s %s\n" $FIREWALL
+		printf "Base table  : %s %s\n" $NFT_BASE_TAB
+		printf "Base familiy: %s %s\n" $NFT_BASE_FAMILY
+		printf "Custom      : %s %s\n" $CUSTOM_FIREWALL
+
+		echo "CUSTOM_FIREWALL='$CUSTOM_FIREWALL'"	>> system.conf
+		echo "FIREWALL='$FIREWALL'" 			>> system.conf
+		echo "NFT_BASE_TAB='$NFT_BASE_TAB'"		>> system.conf
+		echo "NFT_BASE_FAMILY='$NFT_BASE_FAMILY'"	>> system.conf
+	else	
+		echo "Enable and start your preferred firewall first of all."
+		echo "For firewalld:"
+		echo "	# systemctl enable firewalld"
+		echo "	# systemctl start firewalld"
+		echo "For native/custom firewall:"
+		echo "	# systemctl enable nftables"
+		echo "	# systemctl start  nftables"
+		echo "Then start $ME again ..."
+		echo ""
+		echo "NOTE:"
+		echo "The 'xtables' firewall is maintained by the"
+	       	echo "native 'iptables' & 'ipset' commands"
+		echo "is NOT supported by $PRODUCT"
+		read -p "Press RETURN"
+		exit
+	fi
+}
+
+
+#
+# See if needed tools on the system 
+#
+check_tools() {
+local musthave="bash awk grep"
+local tools="$musthave realpath nft ipcalc dig wget at bc whois sqlite3"
+local m t 
+
+	#
+	# Check for the absolute basics
+	# --- just with shell internals! ---
+	#
+	echo "--------------------------------------------------------"
+	for m in `echo $musthave`
+	do
+		result=`$m --version | head -1 | grep GNU`
+		if [ $? -ne 0 ]
+		then
+			echo "$m is missing on your system - watcher does not work without"
+			echo "Please install $m"
+			echo "Exiting ..."
+			exit
+		else
+			echo "$result"
+		fi
+	done
+	echo "--------------------------------------------------------"
+	
+	# Assume everything is missing
+	missing=0
+	missed=""
+	for t in `echo $tools`
+	do
+		if ! which $t >/dev/null 2>&1
+		then
+			printf "%8s %12s %s\n" "Missing" $t "-- please install it for proper operation"
+			missed=$missed" $t"
+			(( missing++ ))
+		else
+			HAVEIT=`which $t`
+			printf  "%8s %12s as %s\n" "Found" $t $HAVEIT
+		fi
+	done
+}
+
+
+#------------------- Main --------------------------
+check_firewall
+check_system
+echo "export MASTER_PATH POOL SYSTEM SYSVERS SYSLIKE SYSSTYLE"		>> system.conf
+#echo "export FIREWALL IPTABLES_SERVICE BASE_IPTABLES"			>> system.conf
+echo "export FIREWALL NFT_BASE_TAB NFT_BASE_FAMILY CUSTOM_FIREWALL"	>> system.conf
+
+export MASTER_PATH POOL SYSTEM SYSVERS SYSLIKE SYSSTYLE
+export FIREWALL NFT_BASETAB NFT_BASE_FAMILY CUSTOM_FIREWALL
+
+check_tools
+
+if [ $missing -ne 0 ]
+then 
+	echo "Not found: $missed"
+	echo "---------------------------------------------------------------------"
+	echo "There are important tools missing on your system"
+	echo "Install these tools and run '`basename $0`' again in $MASTER_PATH"
+	echo "until all needed programs are found as being installed" 
+	echo "Exiting ..."
+	read -p "Press ENTER" DUMMY
+	exit
+else
+	echo "---------------------------------------------------------------------"
+	echo "Nothing is missing"
+fi
+
+#
+# Place a SysV-style init script in /etc/inid.d/...
+#
+
+#
+# Scan for a reasonable init.d
+# ... or create one when missing at all
+#
+if [ -d /etc/init.d ]
+then INITD_OK=1	: echo "All fine /etc/init.d directory exists"
+elif 	[ -l /etc/init.d ]
+	then INITD_OK=1 : echo "All fine /etc/init.d exists as symlink"
+else INITD_OK=0
+	haveit=`find /etc -name "init.d"`
+	
+	if [ -z "$haveit" ]
+	then mkdir /etc/init.d
+	else ln -sf $haveit /etc/init.d
+	fi
+fi
+
+INITNAME=watcher
+rm -f /etc/init.d/$INITNAME
+if [ ! -f /etc/init.d/$INITNAME ]
+then
+	echo "Preparing in /etc/init.d/..."
+	ln -sf $WHERE/Watcher.init /etc/init.d/$INITNAME
+
+	if [ "$SYSTEM" == "rhel" ] || [[ "$SYSTEM" =~ "$SYSLIKE" ]]
+	then (cd /etc/init.d && chkconfig --add $INITNAME)
+	fi
+fi
+
+#
+# Have a systemctl-style startup system?
+#
+if [ -d /usr/lib/systemd/system ]
+then
+	if [ ! -f /usr/lib/systemd/system/$INITNAME.service ]
+	then
+		ln -sf $WHERE/watcher.service  /usr/lib/systemd/system/$INITNAME.service 
+		systemctl daemon-reload
+		systemctl enable $INITNAME.service
+		echo "Provided systemctl service $INITNAME.service"
+		echo "Enabled  systemctl service $INITNAME.service"
+	fi
+else
+	echo "Not a 'systemd'-style system ..."
+fi
+
+#
+# Provide the common load pool directory
+# ... probably on a RAM disk ...
+#
+if [ ! -d $POOL ]
+then
+	mkdir $POOL
+	chmod 750 $POOL	
+	echo "Established pool directory '$POOL'"
+fi
+
+if [ ! -f whitelist ]
+then
+	awk -v thishost=`dig +short $HOSTNAME` '
+	/^(aaa.bbb.ccc.ddd)/ 	{ printf "%s\t\t# This host ...\n", thishost; next }
+				{ print }
+	' whitelist-sample > whitelist
+fi	
+
+if [ ! -f blacklist ]
+then cp blacklist-sample blacklist
+fi
+
+# Traverse modules and run ./Prep in the 
+# module path
+#PREPS="WatchLG WatchMX WatchWB GeoTrack"
+PREPS=`find modules -name Prep`
+
+for p in $PREPS
+do
+#	(cd $MASTER_PATH/modules/$p && ./Prep)
+	echo
+	echo "»» Preparing in `dirname $p` ..."
+	$p
+done
+
+echo "
+Ok. '$INITNAME' is prepared for operation. You can fire it up with:
+   'systemctl start $INITNAME'	 ... or ...
+   'service $INITNAME start'	 ... or ...
+   '/etc/init.d/$INITNAME start'
+Other options are 'stop', 'restart' and 'reload'
+
+- Check your 'watcher.conf' main configuration file in '$MASTER_PATH'
+- Check your 'loader.conf'  in the Watcher master path '$MASTER_PATH'.
+- Check your 'common.conf'  in the Watcher master path '$MASTER_PATH'.
+- Check your individual <MODULE>.conf configuration(s) in the module paths.
+"

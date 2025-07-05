@@ -1,0 +1,44 @@
+#!/bin/bash
+if [[ "$1" == 'debug'  ]]; then set -x;		_DEBUG=$1; shift; fi
+if [[ "$1" == 'debug2' ]]; then set -xvT;	_DEBUG=$1; shift; fi
+if [[ "$1" == 'trace'  ]]; then 		_TRACE=$1; shift; fi
+####################################################################
+# - FillFW - NFT
+# Have a loadfile created by each module or dynloader
+# and load the firewall from this information
+# Provide static/internal sets as well
+#------------------------
+REALPATH=`realpath $0`
+WHERE=`dirname $REALPATH`
+ME=`basename $REALPATH`
+cd $WHERE
+# ------- Core stuff ----
+. system.conf
+. watchermap.conf
+. common.conf
+. common.bashlib
+# ------- API stuff -----
+. api/bash/nft.bashlib
+#------------------------
+
+logger "$ME[$$]: Started (re)loading firewall ..."
+
+#
+# Basics ... nothing before this ...
+#
+# Establich Watcher's 'virtual firewall appliance'
+watcher-preflight	# The very first of all
+
+# Build static/internal sets
+# DROPs
+nft_mkset custody 	"ipv4_addr"	"counter;"
+nft_mkset tarpit	"ipv4_addr"	"counter; flags timeout;  timeout 60s;"
+nft_mkset untreated	"ipv4_addr"	"counter; flags timeout;  timeout 6h;"
+
+# ACCEPTS
+ACCEPTS[passthru]=1
+nft_mkset passthru	"ipv4_addr"	"counter;"
+
+# Finally fire up loaders ...
+. loader.conf
+logger "$ME[$$]: Finished (re)loading firewall ..."

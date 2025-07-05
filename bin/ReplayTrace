@@ -1,0 +1,82 @@
+#!/bin/bash
+if [[ "$1" == 'debug'  ]]; then set -x;		_DEBUG=$1; shift; fi
+if [[ "$1" == 'debug2' ]]; then set -xvT;	_DEBUG=$1; shift; fi
+if [[ "$1" == 'trace'  ]]; then 		_TRACE=$1; shift; fi
+####################################################################
+####################################################
+# »»» Testing tool «««
+# - ReplayTrace - 
+# Replay a odult trace into a mopdule Fifo ...
+####################################################
+export WATCHER_MODE=restart
+#------------------------
+REALPATH=`realpath $0`
+WHERE=`dirname $REALPATH`
+ME=`basename $REALPATH`
+cd $WHERE
+. ../system.conf
+. ../watchermap.conf
+. ../common.conf
+. ../common.bashlib
+#------------------------
+
+_usage() {
+local funtag="[${FUNCNAME[0]}]"	
+local	choices="(LG,MX,MB,WB,GE*)"
+
+	echo "$ME/$funtag Specify which module to restart: $choices" 
+	exit
+}
+
+strip () {
+	grep 'Loop:' $INFILE > $POOL/$ME.tmp
+	awk -v outfile="$POOL/$ME.out" '
+	/\[Loop:/	{
+				split($0,parts,"] ")
+				print parts[2] > outfile
+				split ($2,x,"[")
+				fifo=x[1]
+			}
+
+	END	{ print fifo }
+	' $POOL/$ME.tmp
+}
+
+if [ -z "$1" ];then _usage; exit; fi
+
+#MODNAME=${1^^}
+
+## Note GeoTrack has no rules
+## Must be a regular Watcher process
+#case $MODNAME in
+#	LG|MX|MB|WB)	MOD_PROC=Watch$MODNAME	;;
+#	GE*)		MOD_PROC=GeoTrack	;;	
+#	*)		_usage
+#;;
+#esac
+
+MODULE=modules/$MOD_PROC/$MOD_PROC
+
+if [ -z "$1" ]
+then _usage
+else INFILE=$1
+fi
+
+# Which Fifo to use?
+FIFO=$(strip $INFILE)
+
+PushBase=$FIFO_BASE/$FIFO
+
+echo $PushBase/$FIFO
+
+while read
+do
+	(( count++ ))
+	printf "%08d %s\n" $count "$REPLY"
+	echo $REPLY > $PushBase
+	#sleep 0.3
+done < $POOL/$ME.out
+
+echo "
+$ME done: $POOL/$ME.out"
+
